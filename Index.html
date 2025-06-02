@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vehicle Photo Upload</title>
+  <style>
+    :root{--bg:#fff;--fg:#000;--card:#f5f5f5;--border:#ccc}
+    .dark{--bg:#121212;--fg:#eee;--card:#1e1e1e;--border:#333}
+    body{display:flex;flex-direction:column;align-items:center;margin:0;padding:0 1rem;font-family:Arial,sans-serif;text-align:center;background:var(--bg);color:var(--fg);transition:background .3s,color .3s}
+    header{width:100%;padding:1rem 0;display:flex;justify-content:space-between;align-items:center}
+    h1{margin:.5rem 0 1rem}
+    .logo{max-width:250px;height:auto}
+    form{width:100%;max-width:440px;display:flex;flex-direction:column;gap:1rem}
+    input,select,button{width:100%;padding:.55rem;font-size:1rem;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--fg)}
+    button{cursor:pointer}
+    .output-box{display:block;padding:.55rem;font-weight:bold;font-size:1.1rem;background:var(--card);border:1px solid var(--border);border-radius:4px}
+    #darkModeToggle{margin-right:.5rem;padding:.4rem .8rem}
+    #managerToggle{margin-top:1rem;font-size:.85rem;padding:.4rem .8rem}
+  </style>
+</head>
+<body>
+  <header>
+    <img src="https://logo.clearbit.com/secutel.co.za" alt="Secutel Technologies Logo" class="logo">
+    <label><input type="checkbox" id="darkModeToggle"> Dark Mode</label>
+  </header>
+
+  <h1>Vehicle Photo Upload</h1>
+
+  <form id="uploadForm">
+    <label>Submitter Name:<br><input type="text" id="submitterName" placeholder="First Last" required></label>
+    <label>Submit to Email:<br><input type="email" id="recipientEmail" placeholder="example@email.com" required></label>
+    <label>Province:<br>
+      <select id="province" required>
+        <option value="">Select Province</option>
+        <option value="Eastern Cape">Eastern Cape</option><option value="Free State">Free State</option>
+        <option value="Gauteng">Gauteng</option><option value="KwaZulu-Natal">KwaZulu-Natal</option>
+        <option value="Limpopo">Limpopo</option><option value="Mpumalanga">Mpumalanga</option>
+        <option value="Northern Cape">Northern Cape</option><option value="North West">North West</option>
+        <option value="Western Cape">Western Cape</option>
+      </select>
+    </label>
+    <label>Odometer Reading:<br><input type="number" id="odometerReading" required></label>
+    <label>Next Service At (km):<br><output id="nextServiceDisplay" class="output-box">—</output></label>
+    <label>Licence-disc Expiry Date:<br><input type="date" id="licenceExpiry" required></label>
+    <label>Next Licence Expiry (1 year later):<br><output id="nextExpiryDisplay" class="output-box">—</output></label>
+    <label>Vehicle Photos:<br><input type="file" id="photos" accept="image/*" multiple required></label>
+    <label>Tools Photos:<br><input type="file" id="toolsPhotos" accept="image/*" multiple></label>
+    <button type="submit">Submit</button>
+  </form>
+
+  <button id="managerToggle">Managers Report</button>
+  <p id="message"></p>
+
+  <!-- Firebase & EmailJS -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/emailjs-com@3/dist/email.min.js"></script>
+
+  <script>
+    /* ---------- config ---------- */
+    const firebaseConfig={apiKey:"AIzaSyDLeywcX_xc0FpmHh71XWSC8gDR_xB5yQY",authDomain:"vehicle-photo-app.firebaseapp.com",projectId:"vehicle-photo-app",storageBucket:"vehicle-photo-app.appspot.com",messagingSenderId:"405496318044",appId:"1:405496318044:web:1dc2df984ba48cfeee7e99"};
+    firebase.initializeApp(firebaseConfig);
+    const db=firebase.firestore(),storage=firebase.storage();
+    emailjs.init("YOUR_PUBLIC_KEY");
+    const EMAILJS_SERVICE_ID="YOUR_SERVICE_ID",EMAILJS_TEMPLATE_ID="YOUR_TEMPLATE_ID";
+
+    /* ---------- theme toggle ---------- */
+    document.getElementById('darkModeToggle').addEventListener('change',e=>{
+      document.documentElement.classList.toggle('dark',e.target.checked);
+    });
+
+    /* ---------- helper ---------- */
+    const caps=s=>s.split(/\s+/).filter(Boolean).map(w=>w[0].toUpperCase()+w.slice(1).toLowerCase()).join(' ');
+
+    /* ---------- calc fields ---------- */
+    const odo=document.getElementById('odometerReading'), nextSvc=document.getElementById('nextServiceDisplay');
+    odo.addEventListener('input',()=>{
+      const r=+odo.value;if(!isNaN(r)&&r>0){nextSvc.textContent=`${((Math.floor(r/15000)+1)*15000).toLocaleString()} km`;}else nextSvc.textContent='—';
+    });
+    const licIn=document.getElementById('licenceExpiry'), nextExp=document.getElementById('nextExpiryDisplay');
+    licIn.addEventListener('change',()=>{
+      const v=licIn.value;if(v){const d=new Date(v);d.setFullYear(d.getFullYear()+1);nextExp.textContent=d.toISOString().slice(0,10).replace(/-/g,'');}else nextExp.textContent='—';
+    });
+
+    /* ---------- form submit ---------- */
+    document.getElementById('submitterName').addEventListener('blur',e=>e.target.value=caps(e.target.value));
+    const form=document.getElementById('uploadForm'), msg=document.getElementById('message');
+    form.addEventListener('submit',async e=>{
+      e.preventDefault();msg.textContent='Uploading… please wait ⏳';
+      const nm=caps(document.getElementById('submitterName').value.trim()),
+            email=document.getElementById('recipientEmail').value.trim(),
+            prov=document.getElementById('province').value,
+            odoVal=+odo.value,
+            nextKm=(Math.floor(odoVal/15000)+1)*15000,
+            licRaw=licIn.value, lic=licRaw?licRaw.replace(/-/g,''):'',
+            nextLic=nextExp.textContent,
+            pFiles=[...document.getElementById('photos').files],
+            tFiles=[...document.getElementById('toolsPhotos').files],
+            today=new Date(), yyyymmdd=today.toISOString().slice(0,10).replace(/-/g,''),
+            docId=`${nm.toLowerCase().replace(/\s+/g,'-')}-${yyyymmdd}`;
+      try{
+        const up=(files,dir)=>Promise.all(files.map((f,i)=>{const ref=storage.ref(`${dir}/${docId}-${dir}-${i+1}.jpg`);return ref.put(f).then(()=>ref.getDownloadURL());}));
+        const [pUrls,tUrls]=await Promise.all([up(pFiles,'vehiclePhotos'),up(tFiles,'toolsPhotos')]);
+        await db.collection('vehicleSubmissions').doc(docId).set({
+          submitterName:nm,recipientEmail:email,province:prov,odometerReading:odoVal,nextServiceKm:nextKm,
+          licenceExpiry:lic,nextExpiryDate:nextLic,photoURLs:pUrls,toolsURLs:tUrls,
+          dateSubmitted:firebase.firestore.Timestamp.now(),status:'pending'
+        });
+        await emailjs.send(EMAILJS_SERVICE_ID,EMAILJS_TEMPLATE_ID,{
+          submitter_name:nm,to_email:email,province:prov,odometer_reading:odoVal.toLocaleString(),
+          next_service_km:nextKm.toLocaleString(),licence_expiry:lic,next_expiry:nextLic,
+          photo_urls:pUrls.join('\n'),tools_urls:tUrls.join('\n')
+        });
+        msg.textContent='Form and photos submitted successfully! ✅';form.reset();nextSvc.textContent='—';nextExp.textContent='—';
+      }catch(err){console.error(err);msg.textContent='Error submitting: '+err.message;}
+    });
+
+    /* ---------- manager report ---------- */
+    document.getElementById('managerToggle').addEventListener('click',openManagerPage);
+    async function openManagerPage(){
+      /* fetch latest record per user */
+      const snap=await db.collection('vehicleSubmissions').orderBy('dateSubmitted','desc').get();
+      const latest=new Map();
+      snap.forEach(doc=>{const d=doc.data();if(!latest.has(d.submitterName))latest.set(d.submitterName,d);});
+      const rec=[...latest.values()];
+      /* build table + csv */
+      let tbl='<table><thead><tr><th>Submitter</th><th>Province</th><th>Odometer</th><th>Next Service Km</th><th>Licence Expiry</th><th>Next Licence</th><th>Last Submitted</th></tr></thead><tbody>';
+      let csv='Submitter,Province,Odometer,Next Service Km,Licence Expiry,Next Licence,Last Submitted\n';
+      rec.forEach(r=>{
+        const d=r.dateSubmitted.toDate();const ds=d.toISOString().slice(0,10);
+        tbl+=`<tr><td>${r.submitterName}</td><td>${r.province}</td><td>${r.odometerReading.toLocaleString()}</td><td>${r.nextServiceKm.toLocaleString()}</td><td>${r.licenceExpiry}</td><td>${r.nextExpiryDate}</td><td>${ds}</td></tr>`;
+        csv+=`"${r.submitterName}","${r.province}",${r.odometerReading},${r.nextServiceKm},"${r.licenceExpiry}","${r.nextExpiryDate}",${ds}\n`;
+      });
+      tbl+='</tbody></table>';
+      /* open new tab */
+      const w=window.open('','_blank');
+      w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Manager Report</title><style>
+        body{font-family:Arial,sans-serif;padding:1rem}
+        table{border-collapse:collapse;width:100%}
+        th,td{border:1px solid #999;padding:.4rem;text-align:left}
+        th{background:#eee}
+        button{margin:1rem 0;padding:.6rem 1rem;cursor:pointer}
+      </style></head><body>
+      <h2>Latest submissions per user</h2>
+      <button id="dl">Download Excel</button>
+      ${tbl}
+      <script>
+        const csv=\`${csv.replace(/`/g,'')}\`;
+        document.getElementById('dl').addEventListener('click',()=>{
+          const blob=new Blob([csv],{type:'text/csv'});
+          const url=URL.createObjectURL(blob);
+          const a=document.createElement('a');a.href=url;a.download='manager_report_${new Date().toISOString().slice(0,10)}.csv';a.click();
+          URL.revokeObjectURL(url);
+        });
+      <\/script></body></html>`);
+      w.document.close();
+    }
+  </script>
+</body>
+</html>
